@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+} from 'react';
 
 type BlockType =
   | 'paragraph'
@@ -34,8 +41,13 @@ type WorkspaceState = {
   currentPageId: string;
 };
 
+type SlashMenuState = {
+  blockId: string;
+  query: string;
+};
+
 const STORAGE_KEY = 'notion-replica-v1';
-const BLOCK_OPTIONS: Array<{ label: string; type: BlockType }> = [
+const BLOCK_OPTIONS = [
   { label: 'Text', type: 'paragraph' },
   { label: 'Heading 1', type: 'heading1' },
   { label: 'Heading 2', type: 'heading2' },
@@ -45,10 +57,9 @@ const BLOCK_OPTIONS: Array<{ label: string; type: BlockType }> = [
   { label: 'Quote', type: 'quote' },
   { label: 'Code', type: 'code' },
   { label: 'Divider', type: 'divider' },
-];
+] as const;
 
-const makeId = () =>
-  `${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
+const makeId = () => `${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
 
 const createBlock = (type: BlockType = 'paragraph', content = ''): Block => ({
   id: makeId(),
@@ -57,87 +68,93 @@ const createBlock = (type: BlockType = 'paragraph', content = ''): Block => ({
   ...(type === 'checklist' ? { checked: false } : {}),
 });
 
-const getDefaultPages = (): Page[] => [
-  {
-    id: 'welcome',
-    title: 'Welcome',
-    icon: '✨',
-    parentId: null,
-    favorite: true,
-    blocks: [
-      createBlock('heading1', 'Workspace overview'),
-      createBlock('paragraph', 'Capture ideas, organize notes, and structure projects in one calm writing space.'),
-      createBlock('bullet', 'Create nested pages for projects and teams'),
-      createBlock('bullet', 'Use slash commands to add headings, quotes, and code blocks'),
-      createBlock('checklist', 'Review the weekly plan'),
-      createBlock('quote', 'Good systems turn scattered thinking into a practical workspace.'),
-      createBlock('code', 'npm run dev'),
-    ],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'roadmap',
-    title: 'Roadmap',
-    icon: '🗺️',
-    parentId: null,
-    favorite: true,
-    blocks: [
-      createBlock('heading2', 'Q4 priorities'),
-      createBlock('numbered', 'Finish high-signal writing workspace'),
-      createBlock('numbered', 'Ship nested page navigation'),
-      createBlock('numbered', 'Implement searchable database view'),
-    ],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-];
+const getDefaultPages = (): Page[] => {
+  const now = new Date().toISOString();
+
+  return [
+    {
+      id: 'welcome',
+      title: 'Welcome',
+      icon: '✨',
+      parentId: null,
+      favorite: true,
+      blocks: [
+        createBlock('heading1', 'Workspace overview'),
+        createBlock('paragraph', 'Capture ideas, organize notes, and structure projects in one calm writing space.'),
+        createBlock('bullet', 'Create nested pages for projects and teams'),
+        createBlock('bullet', 'Use slash commands to add headings, quotes, and code blocks'),
+        createBlock('checklist', 'Review the weekly plan'),
+        createBlock('quote', 'Good systems turn scattered thinking into a practical workspace.'),
+        createBlock('code', 'npm run dev'),
+      ],
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: 'roadmap',
+      title: 'Roadmap',
+      icon: '🗺️',
+      parentId: null,
+      favorite: true,
+      blocks: [
+        createBlock('heading2', 'Q4 priorities'),
+        createBlock('numbered', 'Finish high-signal writing workspace'),
+        createBlock('numbered', 'Ship nested page navigation'),
+        createBlock('numbered', 'Implement searchable database view'),
+      ],
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+};
 
 const readWorkspace = (): WorkspaceState => {
   if (typeof window === 'undefined') {
-    const fallback = getDefaultPages();
-    return { pages: fallback, currentPageId: fallback[0].id };
+    const pages = getDefaultPages();
+    return { pages, currentPageId: pages[0].id };
   }
 
   try {
     const rawValue = window.localStorage.getItem(STORAGE_KEY);
     if (!rawValue) {
-      const fallback = getDefaultPages();
-      return { pages: fallback, currentPageId: fallback[0].id };
+      const pages = getDefaultPages();
+      return { pages, currentPageId: pages[0].id };
     }
 
     const parsed = JSON.parse(rawValue) as Partial<WorkspaceState>;
     if (!Array.isArray(parsed.pages) || parsed.pages.length === 0) {
-      const fallback = getDefaultPages();
-      return { pages: fallback, currentPageId: fallback[0].id };
+      const pages = getDefaultPages();
+      return { pages, currentPageId: pages[0].id };
     }
 
     const pages = parsed.pages as Page[];
-    const currentPageId = parsed.currentPageId ?? pages[0].id;
-    return { pages, currentPageId };
-  } catch (error) {
-    const fallback = getDefaultPages();
-    return { pages: fallback, currentPageId: fallback[0].id };
+    return {
+      pages,
+      currentPageId: parsed.currentPageId ?? pages[0].id,
+    };
+  } catch {
+    const pages = getDefaultPages();
+    return { pages, currentPageId: pages[0].id };
   }
 };
 
-const formatUpdated = (value: string) =>
-  new Intl.DateTimeFormat('en', {
+const formatUpdated = (value: string): string =>
+  new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(value));
 
-const findPageByTitle = (pages: Page[], needle: string) =>
-  pages.find((page) => page.title.toLowerCase() === needle.trim().toLowerCase());
+const findPageByTitle = (pages: Page[], title: string): Page | undefined =>
+  pages.find((page) => page.title.trim().toLowerCase() === title.trim().toLowerCase());
 
 const getParentChain = (pages: Page[], pageId: string | null): Page[] => {
   const chain: Page[] = [];
   let cursorId = pageId;
 
   while (cursorId) {
-    const page = pages.find((entry) => entry.id === cursorId);
+    const page = pages.find((item) => item.id === cursorId);
     if (!page) break;
     chain.unshift(page);
     cursorId = page.parentId;
@@ -147,15 +164,15 @@ const getParentChain = (pages: Page[], pageId: string | null): Page[] => {
 };
 
 export default function App() {
-  const workspace = readWorkspace();
-  const [pages, setPages] = useState<Page[]>(workspace.pages);
-  const [currentPageId, setCurrentPageId] = useState<string>(workspace.currentPageId);
+  const initialWorkspace = useMemo(() => readWorkspace(), []);
+  const [pages, setPages] = useState<Page[]>(initialWorkspace.pages);
+  const [currentPageId, setCurrentPageId] = useState(initialWorkspace.currentPageId);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [recentPages, setRecentPages] = useState<string[]>([]);
   const [tableSort, setTableSort] = useState<'updated' | 'title' | 'status'>('updated');
   const [tableFilter, setTableFilter] = useState<'all' | 'favorite' | 'active'>('all');
-  const [slashMenu, setSlashMenu] = useState<{ blockId: string; query: string } | null>(null);
+  const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
   const blockRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   const currentPage = useMemo(
@@ -170,23 +187,23 @@ export default function App() {
   }, [currentPage, pages]);
 
   useEffect(() => {
-    const workspaceState: WorkspaceState = { pages, currentPageId };
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspaceState));
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ pages, currentPageId }));
+    }
   }, [pages, currentPageId]);
 
   useEffect(() => {
     if (!currentPage) return;
-
     setRecentPages((existing) => [currentPage.id, ...existing.filter((id) => id !== currentPage.id)].slice(0, 6));
   }, [currentPage]);
 
-  const updatePage = (pageId: string, updates: Partial<Page>) => {
+  const updatePage = (pageId: string, next: Partial<Page>) => {
     setPages((previousPages) =>
       previousPages.map((page) =>
         page.id === pageId
           ? {
               ...page,
-              ...updates,
+              ...next,
               updatedAt: new Date().toISOString(),
             }
           : page,
@@ -194,7 +211,7 @@ export default function App() {
     );
   };
 
-  const updateBlock = (pageId: string, blockId: string, value: string) => {
+  const toggleChecklist = (pageId: string, blockId: string) => {
     setPages((previousPages) =>
       previousPages.map((page) => {
         if (page.id !== pageId) return page;
@@ -205,8 +222,28 @@ export default function App() {
             block.id === blockId
               ? {
                   ...block,
-                  content: value,
-                  ...(block.type === 'checklist' ? { checked: block.checked ?? false } : {}),
+                  checked: !Boolean(block.checked),
+                }
+              : block,
+          ),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+  };
+
+  const updateBlock = (pageId: string, blockId: string, nextContent: string) => {
+    setPages((previousPages) =>
+      previousPages.map((page) => {
+        if (page.id !== pageId) return page;
+
+        return {
+          ...page,
+          blocks: page.blocks.map((block) =>
+            block.id === blockId
+              ? {
+                  ...block,
+                  content: nextContent,
                 }
               : block,
           ),
@@ -217,16 +254,19 @@ export default function App() {
   };
 
   const insertBlockAfter = (pageId: string, targetId: string | null, type: BlockType = 'paragraph', content = '') => {
+    const newBlock = createBlock(type, content);
     setPages((previousPages) =>
       previousPages.map((page) => {
         if (page.id !== pageId) return page;
 
         const nextBlocks = [...page.blocks];
-        const insertIndex = targetId ? nextBlocks.findIndex((block) => block.id === targetId) : -1;
-        const newBlock = createBlock(type, content);
-
-        if (insertIndex >= 0) {
-          nextBlocks.splice(insertIndex + 1, 0, newBlock);
+        if (targetId) {
+          const targetIndex = nextBlocks.findIndex((block) => block.id === targetId);
+          if (targetIndex >= 0) {
+            nextBlocks.splice(targetIndex + 1, 0, newBlock);
+          } else {
+            nextBlocks.push(newBlock);
+          }
         } else {
           nextBlocks.push(newBlock);
         }
@@ -239,10 +279,8 @@ export default function App() {
       }),
     );
 
-    const newBlock = createBlock(type, content);
     requestAnimationFrame(() => {
-      const input = blockRefs.current[newBlock.id];
-      input?.focus();
+      blockRefs.current[newBlock.id]?.focus();
     });
   };
 
@@ -251,57 +289,50 @@ export default function App() {
       previousPages.map((page) => {
         if (page.id !== pageId) return page;
 
-        const nextBlocks = page.blocks.filter((block) => block.id !== blockId);
+        const remainingBlocks = page.blocks.filter((block) => block.id !== blockId);
+
         return {
           ...page,
-          blocks: nextBlocks.length > 0 ? nextBlocks : [createBlock('paragraph', 'Start writing...')],
+          blocks: remainingBlocks.length > 0 ? remainingBlocks : [createBlock('paragraph', 'Start writing...')],
           updatedAt: new Date().toISOString(),
         };
       }),
     );
-  };
-
-  const applySlashCommand = (pageId: string, blockId: string, type: BlockType) => {
-    setPages((previousPages) =>
-      previousPages.map((page) => {
-        if (page.id !== pageId) return page;
-
-        return {
-          ...page,
-          blocks: page.blocks.map((block) =>
-            block.id === blockId
-              ? {
-                  ...block,
-                  type,
-                  content: type === 'checklist' ? '' : '',
-                  ...(type === 'checklist' ? { checked: false } : {}),
-                }
-              : block,
-          ),
-          updatedAt: new Date().toISOString(),
-        };
-      }),
-    );
-
-    setSlashMenu(null);
   };
 
   const createNewPage = (parentId: string | null = null) => {
-    const title = `Untitled ${pages.length + 1}`;
+    const nextTitle = `Untitled ${pages.length + 1}`;
     const createdPage: Page = {
       id: makeId(),
-      title,
+      title: nextTitle,
       icon: '📄',
       parentId,
       favorite: false,
-      blocks: [createBlock('heading1', title), createBlock('paragraph', 'Write something brilliant...')],
+      blocks: [createBlock('heading1', nextTitle), createBlock('paragraph', 'Write something brilliant...')],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     setPages((previousPages) => [...previousPages, createdPage]);
     setCurrentPageId(createdPage.id);
-    setRecentPages((previous) => [createdPage.id, ...previous.filter((id) => id !== createdPage.id)].slice(0, 6));
+  };
+
+  const duplicatePage = (pageId: string) => {
+    const source = pages.find((page) => page.id === pageId);
+    if (!source) return;
+
+    const duplicated: Page = {
+      ...source,
+      id: makeId(),
+      title: `${source.title} copy`,
+      blocks: source.blocks.map((block) => ({ ...block, id: makeId() })),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      favorite: false,
+    };
+
+    setPages((previousPages) => [...previousPages, duplicated]);
+    setCurrentPageId(duplicated.id);
   };
 
   const deletePage = (pageId: string) => {
@@ -325,38 +356,45 @@ export default function App() {
     setCurrentPageId(remainingPages[0].id);
   };
 
-  const duplicatePage = (pageId: string) => {
-    const source = pages.find((page) => page.id === pageId);
-    if (!source) return;
-
-    const duplicated: Page = {
-      ...source,
-      id: makeId(),
-      title: `${source.title} copy`,
-      icon: source.icon,
-      favorite: false,
-      blocks: source.blocks.map((block) => ({ ...block, id: makeId() })),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    setPages((previousPages) => [...previousPages, duplicated]);
-    setCurrentPageId(duplicated.id);
+  const toggleFavorite = (pageId: string) => {
+    const current = pages.find((page) => page.id === pageId);
+    if (!current) return;
+    updatePage(pageId, { favorite: !current.favorite });
   };
 
-  const toggleFavorite = (pageId: string) => {
-    updatePage(pageId, { favorite: !pages.find((page) => page.id === pageId)?.favorite });
+  const applySlashCommand = (pageId: string, blockId: string, blockType: BlockType) => {
+    setPages((previousPages) =>
+      previousPages.map((page) => {
+        if (page.id !== pageId) return page;
+
+        return {
+          ...page,
+          blocks: page.blocks.map((block) =>
+            block.id === blockId
+              ? {
+                  ...block,
+                  type: blockType,
+                  content: blockType === 'checklist' ? '' : '',
+                  ...(blockType === 'checklist' ? { checked: false } : {}),
+                }
+              : block,
+          ),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+
+    setSlashMenu(null);
   };
 
   const filteredPages = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
-
-    if (!term) return pages;
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return pages;
 
     return pages.filter((page) => {
-      const matchesTitle = page.title.toLowerCase().includes(term);
-      const matchesContent = page.blocks.some((block) => block.content.toLowerCase().includes(term));
-      return matchesTitle || matchesContent;
+      const titleMatch = page.title.toLowerCase().includes(query);
+      const contentMatch = page.blocks.some((block) => block.content.toLowerCase().includes(query));
+      return titleMatch || contentMatch;
     });
   }, [pages, searchTerm]);
 
@@ -378,12 +416,13 @@ export default function App() {
 
   const breadcrumb = currentPage ? getParentChain(pages, currentPage.id) : [];
 
-  const renderPageTree = (parentId: string | null) => {
+  const renderPageTree = (parentId: string | null): React.ReactNode => {
     const children = pages.filter((page) => page.parentId === parentId);
 
     return children.map((page) => (
       <div key={page.id} className="page-node">
         <button
+          type="button"
           className={`page-row ${currentPageId === page.id ? 'active' : ''}`}
           onClick={() => setCurrentPageId(page.id)}
         >
@@ -397,28 +436,28 @@ export default function App() {
   };
 
   const renderBlock = (block: Block) => {
-    const commonProps = {
-      value: block.content,
-      onChange: (event: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) =>
-        updateBlock(currentPage.id, block.id, event.target.value),
-      onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
-        if (event.key === 'Enter' && !event.shiftKey && block.type !== 'code') {
-          event.preventDefault();
-          insertBlockAfter(currentPage.id, block.id, 'paragraph');
-        }
+    const handleChange = (event: ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+      updateBlock(currentPage.id, block.id, event.target.value);
+    };
 
-        if (event.key === 'Backspace' && block.content.trim() === '') {
-          event.preventDefault();
-          removeBlock(currentPage.id, block.id);
-        }
+    const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+      if (event.key === 'Enter' && !event.shiftKey && block.type !== 'code') {
+        event.preventDefault();
+        insertBlockAfter(currentPage.id, block.id, 'paragraph');
+      }
 
-        if (event.key === '/' && block.content === '') {
-          setSlashMenu({ blockId: block.id, query: '' });
-        }
-      },
-      ref: (element: HTMLTextAreaElement | null) => {
-        blockRefs.current[block.id] = element;
-      },
+      if (event.key === 'Backspace' && block.content.trim() === '') {
+        event.preventDefault();
+        removeBlock(currentPage.id, block.id);
+      }
+
+      if (event.key === '/' && block.content === '') {
+        setSlashMenu({ blockId: block.id, query: '' });
+      }
+    };
+
+    const commonRef = (element: HTMLTextAreaElement | null) => {
+      blockRefs.current[block.id] = element;
     };
 
     if (block.type === 'divider') {
@@ -431,12 +470,13 @@ export default function App() {
           <input
             type="checkbox"
             checked={Boolean(block.checked)}
-            onChange={() =>
-              updateBlock(currentPage.id, block.id, block.content)
-            }
+            onChange={() => toggleChecklist(currentPage.id, block.id)}
           />
           <textarea
-            {...commonProps}
+            value={block.content}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            ref={commonRef}
             className="block-input"
             data-type={block.type}
             placeholder="Checklist item"
@@ -445,43 +485,41 @@ export default function App() {
       );
     }
 
-    if (block.type === 'heading1') {
-      return (
-        <div key={block.id} className="block-wrap">
-          <textarea
-            {...commonProps}
-            className="block-input heading-one"
-            data-type={block.type}
-            placeholder="Heading"
-          />
-          {block.content.trim().startsWith('/') ? (
-            <div className="slash-command-menu">
-              {BLOCK_OPTIONS.filter((option) => option.label.toLowerCase().includes('text')).map((option) => (
-                <button key={option.type} onClick={() => applySlashCommand(currentPage.id, block.id, option.type)}>
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      );
-    }
+    const textArea = (
+      <textarea
+        value={block.content}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        ref={commonRef}
+        className={`block-input ${block.type === 'heading1' ? 'heading-one' : ''} ${block.type === 'code' ? 'code-block' : ''}`}
+        data-type={block.type}
+        placeholder={
+          block.type === 'heading1'
+            ? 'Heading'
+            : block.type === 'quote'
+              ? 'Quote'
+              : block.type === 'code'
+                ? 'Code'
+                : 'Write something...'
+        }
+      />
+    );
 
     return (
       <div key={block.id} className="block-wrap">
-        <textarea
-          {...commonProps}
-          className={`block-input ${block.type === 'code' ? 'code-block' : ''}`}
-          data-type={block.type}
-          placeholder={block.type === 'quote' ? 'Quote' : block.type === 'code' ? 'Code' : 'Write something...'}
-        />
+        {textArea}
         {block.content.includes('[[') ? (
           <div className="link-preview">
             {Array.from(block.content.matchAll(/\[\[([^\]]+)\]\]/g)).map((match, index) => {
-              const page = findPageByTitle(pages, match[1]);
-              return page ? (
-                <button key={`${page.id}-${index}`} className="linked-page-chip" onClick={() => setCurrentPageId(page.id)}>
-                  {page.icon} {page.title}
+              const linkedPage = findPageByTitle(pages, match[1]);
+              return linkedPage ? (
+                <button
+                  key={`${linkedPage.id}-${index}`}
+                  type="button"
+                  className="linked-page-chip"
+                  onClick={() => setCurrentPageId(linkedPage.id)}
+                >
+                  {linkedPage.icon} {linkedPage.title}
                 </button>
               ) : (
                 <span key={`${match[1]}-${index}`} className="unlinked-chip">
@@ -493,10 +531,13 @@ export default function App() {
         ) : null}
         {slashMenu && slashMenu.blockId === block.id ? (
           <div className="slash-command-menu">
-            {BLOCK_OPTIONS.filter((option) => option.label.toLowerCase().includes(slashMenu.query.toLowerCase()) || !slashMenu.query)
+            {BLOCK_OPTIONS.filter((option) => {
+              const query = slashMenu.query.trim().toLowerCase();
+              return !query || option.label.toLowerCase().includes(query);
+            })
               .slice(0, 6)
               .map((option) => (
-                <button key={option.type} onClick={() => applySlashCommand(currentPage.id, block.id, option.type)}>
+                <button key={option.type} type="button" onClick={() => applySlashCommand(currentPage.id, block.id, option.type)}>
                   {option.label}
                 </button>
               ))}
@@ -518,12 +559,12 @@ export default function App() {
             <p className="eyebrow">Workspace</p>
             <h2>Notion Replica</h2>
           </div>
-          <button className="icon-button" onClick={() => setSidebarCollapsed((value) => !value)}>
+          <button type="button" className="icon-button" onClick={() => setSidebarCollapsed((value) => !value)}>
             {sidebarCollapsed ? '→' : '←'}
           </button>
         </div>
 
-        <button className="primary-button" onClick={() => createNewPage()}>
+        <button type="button" className="primary-button" onClick={() => createNewPage()}>
           + New page
         </button>
 
@@ -541,7 +582,12 @@ export default function App() {
           <div className="section-label">Favorites</div>
           <div className="page-stack">
             {pages.filter((page) => page.favorite).map((page) => (
-              <button key={page.id} className={`nav-item ${currentPageId === page.id ? 'active' : ''}`} onClick={() => setCurrentPageId(page.id)}>
+              <button
+                key={page.id}
+                type="button"
+                className={`nav-item ${currentPageId === page.id ? 'active' : ''}`}
+                onClick={() => setCurrentPageId(page.id)}
+              >
                 <span>{page.icon}</span>
                 {page.title}
               </button>
@@ -556,7 +602,12 @@ export default function App() {
               .map((pageId) => pages.find((page) => page.id === pageId))
               .filter(Boolean)
               .map((page) => (
-                <button key={page.id} className={`nav-item ${currentPageId === page.id ? 'active' : ''}`} onClick={() => setCurrentPageId(page.id)}>
+                <button
+                  key={page.id}
+                  type="button"
+                  className={`nav-item ${currentPageId === page.id ? 'active' : ''}`}
+                  onClick={() => setCurrentPageId(page.id)}
+                >
                   <span>{page.icon}</span>
                   {page.title}
                 </button>
@@ -574,7 +625,7 @@ export default function App() {
         <header className="topbar">
           <nav className="breadcrumbs" aria-label="Breadcrumbs">
             {breadcrumb.map((crumb, index) => (
-              <button key={crumb.id} className="crumb" onClick={() => setCurrentPageId(crumb.id)}>
+              <button key={crumb.id} type="button" className="crumb" onClick={() => setCurrentPageId(crumb.id)}>
                 {crumb.title}
                 {index < breadcrumb.length - 1 ? <span> / </span> : null}
               </button>
@@ -582,10 +633,10 @@ export default function App() {
           </nav>
 
           <div className="topbar-actions">
-            <button className="ghost-button" onClick={() => createNewPage(currentPage.id)}>
+            <button type="button" className="ghost-button" onClick={() => createNewPage(currentPage.id)}>
               + Child page
             </button>
-            <button className="ghost-button" onClick={() => toggleFavorite(currentPage.id)}>
+            <button type="button" className="ghost-button" onClick={() => toggleFavorite(currentPage.id)}>
               {currentPage.favorite ? '★ Favorite' : '☆ Favorite'}
             </button>
           </div>
@@ -594,6 +645,7 @@ export default function App() {
         <div className="editor-surface">
           <div className="page-header">
             <button
+              type="button"
               className="icon-picker"
               onClick={() => updatePage(currentPage.id, { icon: window.prompt('Choose an icon', currentPage.icon) ?? currentPage.icon })}
             >
@@ -613,7 +665,11 @@ export default function App() {
 
           <div className="page-editor">
             {currentPage.blocks.map((block) => renderBlock(block))}
-            <button className="add-block-button" onClick={() => insertBlockAfter(currentPage.id, currentPage.blocks[currentPage.blocks.length - 1]?.id ?? null, 'paragraph')}>
+            <button
+              type="button"
+              className="add-block-button"
+              onClick={() => insertBlockAfter(currentPage.id, currentPage.blocks[currentPage.blocks.length - 1]?.id ?? null, 'paragraph')}
+            >
               + Add block
             </button>
           </div>
@@ -652,15 +708,15 @@ export default function App() {
               {tableRows.map((page) => (
                 <tr key={page.id}>
                   <td>
-                    <button className="database-link" onClick={() => setCurrentPageId(page.id)}>
+                    <button type="button" className="database-link" onClick={() => setCurrentPageId(page.id)}>
                       {page.icon} {page.title}
                     </button>
                   </td>
                   <td>{page.favorite ? 'Favorite' : 'Active'}</td>
                   <td>{formatUpdated(page.updatedAt)}</td>
                   <td className="table-actions">
-                    <button onClick={() => duplicatePage(page.id)}>Duplicate</button>
-                    <button onClick={() => deletePage(page.id)}>Delete</button>
+                    <button type="button" onClick={() => duplicatePage(page.id)}>Duplicate</button>
+                    <button type="button" onClick={() => deletePage(page.id)}>Delete</button>
                   </td>
                 </tr>
               ))}
@@ -671,3 +727,4 @@ export default function App() {
     </div>
   );
 }
+
