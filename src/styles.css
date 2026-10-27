@@ -416,7 +416,7 @@ export default function App() {
 
   const breadcrumb = currentPage ? getParentChain(pages, currentPage.id) : [];
 
-  const renderPageTree = (parentId: string | null): React.ReactNode => {
+  const renderPageTree = (parentId: string | null) => {
     const children = pages.filter((page) => page.parentId === parentId);
 
     return children.map((page) => (
@@ -727,4 +727,3 @@ export default function App() {
     </div>
   );
 }
-
