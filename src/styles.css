@@ -1,0 +1,673 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+type BlockType =
+  | 'paragraph'
+  | 'heading1'
+  | 'heading2'
+  | 'bullet'
+  | 'numbered'
+  | 'checklist'
+  | 'quote'
+  | 'code'
+  | 'divider';
+
+type Block = {
+  id: string;
+  type: BlockType;
+  content: string;
+  checked?: boolean;
+};
+
+type Page = {
+  id: string;
+  title: string;
+  icon: string;
+  parentId: string | null;
+  favorite: boolean;
+  blocks: Block[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+type WorkspaceState = {
+  pages: Page[];
+  currentPageId: string;
+};
+
+const STORAGE_KEY = 'notion-replica-v1';
+const BLOCK_OPTIONS: Array<{ label: string; type: BlockType }> = [
+  { label: 'Text', type: 'paragraph' },
+  { label: 'Heading 1', type: 'heading1' },
+  { label: 'Heading 2', type: 'heading2' },
+  { label: 'Bullet list', type: 'bullet' },
+  { label: 'Numbered list', type: 'numbered' },
+  { label: 'Checklist', type: 'checklist' },
+  { label: 'Quote', type: 'quote' },
+  { label: 'Code', type: 'code' },
+  { label: 'Divider', type: 'divider' },
+];
+
+const makeId = () =>
+  `${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
+
+const createBlock = (type: BlockType = 'paragraph', content = ''): Block => ({
+  id: makeId(),
+  type,
+  content,
+  ...(type === 'checklist' ? { checked: false } : {}),
+});
+
+const getDefaultPages = (): Page[] => [
+  {
+    id: 'welcome',
+    title: 'Welcome',
+    icon: '✨',
+    parentId: null,
+    favorite: true,
+    blocks: [
+      createBlock('heading1', 'Workspace overview'),
+      createBlock('paragraph', 'Capture ideas, organize notes, and structure projects in one calm writing space.'),
+      createBlock('bullet', 'Create nested pages for projects and teams'),
+      createBlock('bullet', 'Use slash commands to add headings, quotes, and code blocks'),
+      createBlock('checklist', 'Review the weekly plan'),
+      createBlock('quote', 'Good systems turn scattered thinking into a practical workspace.'),
+      createBlock('code', 'npm run dev'),
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'roadmap',
+    title: 'Roadmap',
+    icon: '🗺️',
+    parentId: null,
+    favorite: true,
+    blocks: [
+      createBlock('heading2', 'Q4 priorities'),
+      createBlock('numbered', 'Finish high-signal writing workspace'),
+      createBlock('numbered', 'Ship nested page navigation'),
+      createBlock('numbered', 'Implement searchable database view'),
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+const readWorkspace = (): WorkspaceState => {
+  if (typeof window === 'undefined') {
+    const fallback = getDefaultPages();
+    return { pages: fallback, currentPageId: fallback[0].id };
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(STORAGE_KEY);
+    if (!rawValue) {
+      const fallback = getDefaultPages();
+      return { pages: fallback, currentPageId: fallback[0].id };
+    }
+
+    const parsed = JSON.parse(rawValue) as Partial<WorkspaceState>;
+    if (!Array.isArray(parsed.pages) || parsed.pages.length === 0) {
+      const fallback = getDefaultPages();
+      return { pages: fallback, currentPageId: fallback[0].id };
+    }
+
+    const pages = parsed.pages as Page[];
+    const currentPageId = parsed.currentPageId ?? pages[0].id;
+    return { pages, currentPageId };
+  } catch (error) {
+    const fallback = getDefaultPages();
+    return { pages: fallback, currentPageId: fallback[0].id };
+  }
+};
+
+const formatUpdated = (value: string) =>
+  new Intl.DateTimeFormat('en', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value));
+
+const findPageByTitle = (pages: Page[], needle: string) =>
+  pages.find((page) => page.title.toLowerCase() === needle.trim().toLowerCase());
+
+const getParentChain = (pages: Page[], pageId: string | null): Page[] => {
+  const chain: Page[] = [];
+  let cursorId = pageId;
+
+  while (cursorId) {
+    const page = pages.find((entry) => entry.id === cursorId);
+    if (!page) break;
+    chain.unshift(page);
+    cursorId = page.parentId;
+  }
+
+  return chain;
+};
+
+export default function App() {
+  const workspace = readWorkspace();
+  const [pages, setPages] = useState<Page[]>(workspace.pages);
+  const [currentPageId, setCurrentPageId] = useState<string>(workspace.currentPageId);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [recentPages, setRecentPages] = useState<string[]>([]);
+  const [tableSort, setTableSort] = useState<'updated' | 'title' | 'status'>('updated');
+  const [tableFilter, setTableFilter] = useState<'all' | 'favorite' | 'active'>('all');
+  const [slashMenu, setSlashMenu] = useState<{ blockId: string; query: string } | null>(null);
+  const blockRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+
+  const currentPage = useMemo(
+    () => pages.find((page) => page.id === currentPageId) ?? pages[0],
+    [pages, currentPageId],
+  );
+
+  useEffect(() => {
+    if (!currentPage && pages.length > 0) {
+      setCurrentPageId(pages[0].id);
+    }
+  }, [currentPage, pages]);
+
+  useEffect(() => {
+    const workspaceState: WorkspaceState = { pages, currentPageId };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspaceState));
+  }, [pages, currentPageId]);
+
+  useEffect(() => {
+    if (!currentPage) return;
+
+    setRecentPages((existing) => [currentPage.id, ...existing.filter((id) => id !== currentPage.id)].slice(0, 6));
+  }, [currentPage]);
+
+  const updatePage = (pageId: string, updates: Partial<Page>) => {
+    setPages((previousPages) =>
+      previousPages.map((page) =>
+        page.id === pageId
+          ? {
+              ...page,
+              ...updates,
+              updatedAt: new Date().toISOString(),
+            }
+          : page,
+      ),
+    );
+  };
+
+  const updateBlock = (pageId: string, blockId: string, value: string) => {
+    setPages((previousPages) =>
+      previousPages.map((page) => {
+        if (page.id !== pageId) return page;
+
+        return {
+          ...page,
+          blocks: page.blocks.map((block) =>
+            block.id === blockId
+              ? {
+                  ...block,
+                  content: value,
+                  ...(block.type === 'checklist' ? { checked: block.checked ?? false } : {}),
+                }
+              : block,
+          ),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+  };
+
+  const insertBlockAfter = (pageId: string, targetId: string | null, type: BlockType = 'paragraph', content = '') => {
+    setPages((previousPages) =>
+      previousPages.map((page) => {
+        if (page.id !== pageId) return page;
+
+        const nextBlocks = [...page.blocks];
+        const insertIndex = targetId ? nextBlocks.findIndex((block) => block.id === targetId) : -1;
+        const newBlock = createBlock(type, content);
+
+        if (insertIndex >= 0) {
+          nextBlocks.splice(insertIndex + 1, 0, newBlock);
+        } else {
+          nextBlocks.push(newBlock);
+        }
+
+        return {
+          ...page,
+          blocks: nextBlocks,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+
+    const newBlock = createBlock(type, content);
+    requestAnimationFrame(() => {
+      const input = blockRefs.current[newBlock.id];
+      input?.focus();
+    });
+  };
+
+  const removeBlock = (pageId: string, blockId: string) => {
+    setPages((previousPages) =>
+      previousPages.map((page) => {
+        if (page.id !== pageId) return page;
+
+        const nextBlocks = page.blocks.filter((block) => block.id !== blockId);
+        return {
+          ...page,
+          blocks: nextBlocks.length > 0 ? nextBlocks : [createBlock('paragraph', 'Start writing...')],
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+  };
+
+  const applySlashCommand = (pageId: string, blockId: string, type: BlockType) => {
+    setPages((previousPages) =>
+      previousPages.map((page) => {
+        if (page.id !== pageId) return page;
+
+        return {
+          ...page,
+          blocks: page.blocks.map((block) =>
+            block.id === blockId
+              ? {
+                  ...block,
+                  type,
+                  content: type === 'checklist' ? '' : '',
+                  ...(type === 'checklist' ? { checked: false } : {}),
+                }
+              : block,
+          ),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+
+    setSlashMenu(null);
+  };
+
+  const createNewPage = (parentId: string | null = null) => {
+    const title = `Untitled ${pages.length + 1}`;
+    const createdPage: Page = {
+      id: makeId(),
+      title,
+      icon: '📄',
+      parentId,
+      favorite: false,
+      blocks: [createBlock('heading1', title), createBlock('paragraph', 'Write something brilliant...')],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setPages((previousPages) => [...previousPages, createdPage]);
+    setCurrentPageId(createdPage.id);
+    setRecentPages((previous) => [createdPage.id, ...previous.filter((id) => id !== createdPage.id)].slice(0, 6));
+  };
+
+  const deletePage = (pageId: string) => {
+    if (pages.length <= 1) {
+      setPages((previousPages) =>
+        previousPages.map((page) =>
+          page.id === pageId
+            ? {
+                ...page,
+                title: 'Untitled page',
+                blocks: [createBlock('paragraph', 'Start writing...')],
+              }
+            : page,
+        ),
+      );
+      return;
+    }
+
+    const remainingPages = pages.filter((page) => page.id !== pageId);
+    setPages(remainingPages);
+    setCurrentPageId(remainingPages[0].id);
+  };
+
+  const duplicatePage = (pageId: string) => {
+    const source = pages.find((page) => page.id === pageId);
+    if (!source) return;
+
+    const duplicated: Page = {
+      ...source,
+      id: makeId(),
+      title: `${source.title} copy`,
+      icon: source.icon,
+      favorite: false,
+      blocks: source.blocks.map((block) => ({ ...block, id: makeId() })),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setPages((previousPages) => [...previousPages, duplicated]);
+    setCurrentPageId(duplicated.id);
+  };
+
+  const toggleFavorite = (pageId: string) => {
+    updatePage(pageId, { favorite: !pages.find((page) => page.id === pageId)?.favorite });
+  };
+
+  const filteredPages = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+
+    if (!term) return pages;
+
+    return pages.filter((page) => {
+      const matchesTitle = page.title.toLowerCase().includes(term);
+      const matchesContent = page.blocks.some((block) => block.content.toLowerCase().includes(term));
+      return matchesTitle || matchesContent;
+    });
+  }, [pages, searchTerm]);
+
+  const tableRows = useMemo(() => {
+    const rows = [...pages].filter((page) => {
+      if (tableFilter === 'favorite') return page.favorite;
+      if (tableFilter === 'active') return !page.favorite;
+      return true;
+    });
+
+    rows.sort((left, right) => {
+      if (tableSort === 'title') return left.title.localeCompare(right.title);
+      if (tableSort === 'status') return Number(right.favorite) - Number(left.favorite);
+      return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+    });
+
+    return rows;
+  }, [pages, tableFilter, tableSort]);
+
+  const breadcrumb = currentPage ? getParentChain(pages, currentPage.id) : [];
+
+  const renderPageTree = (parentId: string | null) => {
+    const children = pages.filter((page) => page.parentId === parentId);
+
+    return children.map((page) => (
+      <div key={page.id} className="page-node">
+        <button
+          className={`page-row ${currentPageId === page.id ? 'active' : ''}`}
+          onClick={() => setCurrentPageId(page.id)}
+        >
+          <span>{page.icon}</span>
+          <span>{page.title}</span>
+          {page.favorite ? <span className="star">★</span> : null}
+        </button>
+        <div className="page-children">{renderPageTree(page.id)}</div>
+      </div>
+    ));
+  };
+
+  const renderBlock = (block: Block) => {
+    const commonProps = {
+      value: block.content,
+      onChange: (event: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) =>
+        updateBlock(currentPage.id, block.id, event.target.value),
+      onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+        if (event.key === 'Enter' && !event.shiftKey && block.type !== 'code') {
+          event.preventDefault();
+          insertBlockAfter(currentPage.id, block.id, 'paragraph');
+        }
+
+        if (event.key === 'Backspace' && block.content.trim() === '') {
+          event.preventDefault();
+          removeBlock(currentPage.id, block.id);
+        }
+
+        if (event.key === '/' && block.content === '') {
+          setSlashMenu({ blockId: block.id, query: '' });
+        }
+      },
+      ref: (element: HTMLTextAreaElement | null) => {
+        blockRefs.current[block.id] = element;
+      },
+    };
+
+    if (block.type === 'divider') {
+      return <div key={block.id} className="divider-block" aria-label="Divider block" />;
+    }
+
+    if (block.type === 'checklist') {
+      return (
+        <div key={block.id} className="checklist-row">
+          <input
+            type="checkbox"
+            checked={Boolean(block.checked)}
+            onChange={() =>
+              updateBlock(currentPage.id, block.id, block.content)
+            }
+          />
+          <textarea
+            {...commonProps}
+            className="block-input"
+            data-type={block.type}
+            placeholder="Checklist item"
+          />
+        </div>
+      );
+    }
+
+    if (block.type === 'heading1') {
+      return (
+        <div key={block.id} className="block-wrap">
+          <textarea
+            {...commonProps}
+            className="block-input heading-one"
+            data-type={block.type}
+            placeholder="Heading"
+          />
+          {block.content.trim().startsWith('/') ? (
+            <div className="slash-command-menu">
+              {BLOCK_OPTIONS.filter((option) => option.label.toLowerCase().includes('text')).map((option) => (
+                <button key={option.type} onClick={() => applySlashCommand(currentPage.id, block.id, option.type)}>
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    return (
+      <div key={block.id} className="block-wrap">
+        <textarea
+          {...commonProps}
+          className={`block-input ${block.type === 'code' ? 'code-block' : ''}`}
+          data-type={block.type}
+          placeholder={block.type === 'quote' ? 'Quote' : block.type === 'code' ? 'Code' : 'Write something...'}
+        />
+        {block.content.includes('[[') ? (
+          <div className="link-preview">
+            {Array.from(block.content.matchAll(/\[\[([^\]]+)\]\]/g)).map((match, index) => {
+              const page = findPageByTitle(pages, match[1]);
+              return page ? (
+                <button key={`${page.id}-${index}`} className="linked-page-chip" onClick={() => setCurrentPageId(page.id)}>
+                  {page.icon} {page.title}
+                </button>
+              ) : (
+                <span key={`${match[1]}-${index}`} className="unlinked-chip">
+                  [[{match[1]}]]
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
+        {slashMenu && slashMenu.blockId === block.id ? (
+          <div className="slash-command-menu">
+            {BLOCK_OPTIONS.filter((option) => option.label.toLowerCase().includes(slashMenu.query.toLowerCase()) || !slashMenu.query)
+              .slice(0, 6)
+              .map((option) => (
+                <button key={option.type} onClick={() => applySlashCommand(currentPage.id, block.id, option.type)}>
+                  {option.label}
+                </button>
+              ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  if (!currentPage) {
+    return <div className="empty-shell">Loading workspace…</div>;
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="sidebar-header">
+          <div>
+            <p className="eyebrow">Workspace</p>
+            <h2>Notion Replica</h2>
+          </div>
+          <button className="icon-button" onClick={() => setSidebarCollapsed((value) => !value)}>
+            {sidebarCollapsed ? '→' : '←'}
+          </button>
+        </div>
+
+        <button className="primary-button" onClick={() => createNewPage()}>
+          + New page
+        </button>
+
+        <div className="sidebar-section">
+          <div className="section-label">Search</div>
+          <input
+            className="search-input"
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Search pages or notes"
+          />
+        </div>
+
+        <div className="sidebar-section">
+          <div className="section-label">Favorites</div>
+          <div className="page-stack">
+            {pages.filter((page) => page.favorite).map((page) => (
+              <button key={page.id} className={`nav-item ${currentPageId === page.id ? 'active' : ''}`} onClick={() => setCurrentPageId(page.id)}>
+                <span>{page.icon}</span>
+                {page.title}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="section-label">Recent</div>
+          <div className="page-stack">
+            {recentPages
+              .map((pageId) => pages.find((page) => page.id === pageId))
+              .filter(Boolean)
+              .map((page) => (
+                <button key={page.id} className={`nav-item ${currentPageId === page.id ? 'active' : ''}`} onClick={() => setCurrentPageId(page.id)}>
+                  <span>{page.icon}</span>
+                  {page.title}
+                </button>
+              ))}
+          </div>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="section-label">Pages</div>
+          <div className="page-tree">{renderPageTree(null)}</div>
+        </div>
+      </aside>
+
+      <main className="content-panel">
+        <header className="topbar">
+          <nav className="breadcrumbs" aria-label="Breadcrumbs">
+            {breadcrumb.map((crumb, index) => (
+              <button key={crumb.id} className="crumb" onClick={() => setCurrentPageId(crumb.id)}>
+                {crumb.title}
+                {index < breadcrumb.length - 1 ? <span> / </span> : null}
+              </button>
+            ))}
+          </nav>
+
+          <div className="topbar-actions">
+            <button className="ghost-button" onClick={() => createNewPage(currentPage.id)}>
+              + Child page
+            </button>
+            <button className="ghost-button" onClick={() => toggleFavorite(currentPage.id)}>
+              {currentPage.favorite ? '★ Favorite' : '☆ Favorite'}
+            </button>
+          </div>
+        </header>
+
+        <div className="editor-surface">
+          <div className="page-header">
+            <button
+              className="icon-picker"
+              onClick={() => updatePage(currentPage.id, { icon: window.prompt('Choose an icon', currentPage.icon) ?? currentPage.icon })}
+            >
+              {currentPage.icon}
+            </button>
+            <input
+              className="page-title"
+              value={currentPage.title}
+              onChange={(event) => updatePage(currentPage.id, { title: event.target.value || 'Untitled page' })}
+            />
+          </div>
+
+          <div className="metadata-row">
+            <span>Updated {formatUpdated(currentPage.updatedAt)}</span>
+            <span>{currentPage.blocks.length} blocks</span>
+          </div>
+
+          <div className="page-editor">
+            {currentPage.blocks.map((block) => renderBlock(block))}
+            <button className="add-block-button" onClick={() => insertBlockAfter(currentPage.id, currentPage.blocks[currentPage.blocks.length - 1]?.id ?? null, 'paragraph')}>
+              + Add block
+            </button>
+          </div>
+        </div>
+
+        <section className="database-panel">
+          <div className="database-header">
+            <div>
+              <p className="eyebrow">Database</p>
+              <h3>Page index</h3>
+            </div>
+            <div className="database-controls">
+              <select value={tableFilter} onChange={(event) => setTableFilter(event.target.value as 'all' | 'favorite' | 'active')}>
+                <option value="all">All</option>
+                <option value="favorite">Favorites</option>
+                <option value="active">Active</option>
+              </select>
+              <select value={tableSort} onChange={(event) => setTableSort(event.target.value as 'updated' | 'title' | 'status')}>
+                <option value="updated">Updated</option>
+                <option value="title">Title</option>
+                <option value="status">Status</option>
+              </select>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tableRows.map((page) => (
+                <tr key={page.id}>
+                  <td>
+                    <button className="database-link" onClick={() => setCurrentPageId(page.id)}>
+                      {page.icon} {page.title}
+                    </button>
+                  </td>
+                  <td>{page.favorite ? 'Favorite' : 'Active'}</td>
+                  <td>{formatUpdated(page.updatedAt)}</td>
+                  <td className="table-actions">
+                    <button onClick={() => duplicatePage(page.id)}>Duplicate</button>
+                    <button onClick={() => deletePage(page.id)}>Delete</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+  );
+}
